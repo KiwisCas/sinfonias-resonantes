@@ -221,6 +221,8 @@ Estas reglas buscan un equilibrio entre la intención humana y el comportamiento
 
 ### 5.2. Memo Akten — [*Equilibrium*](https://memo.tv/projects/2014/equilibrium/), [*Reincarnation*](https://memo.tv/projects/2009/reincarnation/)
 
+<video controls src="videosReadMe/Reincarnation.mp4" title="Title"></video>
+
 **Qué tomo:** la relación entre el cuerpo y un sistema audiovisual generativo en la que el movimiento forma parte de un comportamiento más amplio, en vez de producir una respuesta inmediata y uno a uno.
 
 **En qué me distancio:** las obras de Akten suelen sostener un mismo sistema durante toda la experiencia. La mía cambia deliberadamente sus reglas a mitad del recorrido, y esa ruptura es el centro del significado. Eso implica un riesgo que él no tiene: el usuario puede sentir que el sistema "dejó de funcionar". Por eso añadí retroalimentación clara (las líneas de la red siguen la dirección de la mano) para que la frustración de la fase II sea intencional y no confusa.
