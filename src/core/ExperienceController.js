@@ -133,17 +133,7 @@ export class ExperienceController {
     });
     inp.on('gesture', (g) => this.gestures.handle(g));
     // Poses de dos manos: separadas -> ruptura (fase I), juntas -> encuentro (fase II).
-    inp.on('pose', ({ pose, mid }) => {
-      if (!this.started) return;
-      const wanted = (pose === 'apart' && tr.phase === 1) || (pose === 'together' && tr.phase === 2);
-      if (wanted && mid) {
-        const q = this.composition.screenToQ(mid[0], mid[1], [0, 0]);
-        if (q && tr.beginHold(q, 0, 1.1 / 1.5)) this.poseHold = true;
-      } else if (this.poseHold) {
-        tr.endHold();
-        this.poseHold = false;
-      }
-    });
+    inp.on('pose', ({ pose, mid }) => this.applyPose(pose, mid));
     inp.on('key', (k) => {
       if (k === 'c') this.toggleHands();
       else if (k === 'f') this.overlay.toggleStats();
@@ -173,6 +163,21 @@ export class ExperienceController {
         this.poseHold = false;
       }
     });
+  }
+
+  /** Pose de dos manos -> carga del umbral. Se llama al cambiar la pose y en cada cuadro. */
+  applyPose(pose, mid) {
+    if (!this.started) return;
+    const tr = this.transition;
+    const wanted = (pose === 'apart' && tr.phase === 1) || (pose === 'together' && tr.phase === 2);
+    if (wanted && mid) {
+      if (this.poseHold) return;
+      const q = this.composition.screenToQ(mid[0], mid[1], [0, 0]);
+      if (q && tr.beginHold(q, 0, 1.1 / 1.5)) this.poseHold = true;
+    } else if (this.poseHold) {
+      tr.endHold();
+      this.poseHold = false;
+    }
   }
 
   /**
@@ -313,6 +318,9 @@ export class ExperienceController {
 
     // --- entrada -> coordenadas de lienzo
     this.hands.update(nowMs);
+    // La pose sólo emite al cambiar: si las manos ya estaban juntas mientras la ruptura
+    // aún se animaba (beginHold lo rechaza), hay que reintentarlo cuando termine.
+    if (this.hands.pose && !this.poseHold) this.applyPose(this.hands.pose, this.hands.poseMid);
     const streams = this.input.consumeStreams(this.streamList);
     const p = this.input.pointer;
     const pointerQ = p.inside ? comp.screenToQ(p.x, p.y, this.pointerQ) : null;
@@ -471,7 +479,7 @@ export class ExperienceController {
     comp.render();
 
     this.gestures.update(dt);
-    if (this.frame % 30 === 0) this.overlay.updateStats(Math.round(1 / this.perf.avg), this.perf.tier, QUALITY.length);
+    if (this.frame % 30 === 0) this.overlay.updateStats(Math.round(1 / this.perf.avg), this.perf.tier, QUALITY.length, this.hands.enabled ? this.hands.stats : null);
     this.overlay.moveCursor(p.x, p.y, tr.charge, p.inside && this.started && !this.hands.enabled);
     this.overlay.drawHands(this.hands, tr.charge, this.poseHold);
     this.audio.update(dt, { tech, hybrid: hyb, speed: m.speed, charge: tr.charge, agitation: m.agitation });

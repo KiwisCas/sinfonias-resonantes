@@ -24,13 +24,18 @@ const REACH = 1.3;        // la zona central de la cámara cubre toda la pantall
 const GRACE = 0.3;        // s que una mano puede desaparecer sin perder su estado
 const MATCH_DIST = 0.25;  // distancia máxima (coords. de cámara) para reconocer la misma mano
 const BLOOM_WINDOW = 0.8; // s entre cerrar el puño y abrir la palma
+const TOGETHER_ENTER = 2.0; // separación entre palmas (en tamaños de mano) para "juntas"
+const TOGETHER_EXIT = 2.6;
+const MERGE_WINDOW = 2.5;   // s que se acepta una sola mano tras ver las dos juntas
+const DETECT_MS = 30;       // intervalo mínimo entre detecciones (≈ 30 fps de la cámara)
 
 const d3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, (a.z || 0) - (b.z || 0));
 const wrap = (a) => (a > Math.PI ? a - 2 * Math.PI : a < -Math.PI ? a + 2 * Math.PI : a);
 
 /** Filtro One Euro: suaviza el temblor en reposo y sigue los movimientos rápidos. */
 class OneEuro {
-  constructor(minCutoff = 1.4, beta = 0.006, dCutoff = 1) {
+  // beta alto = menos retraso al mover la mano rápido (con 0.006 el trazo iba ~35 ms por detrás).
+  constructor(minCutoff = 1.4, beta = 0.015, dCutoff = 1) {
     this.minCutoff = minCutoff; this.beta = beta; this.dCutoff = dCutoff; this.t = null;
   }
   static alpha(dt, cutoff) { const tau = 1 / (2 * Math.PI * cutoff); return 1 / (1 + tau / dt); }
@@ -54,24 +59,33 @@ export class HandInputSource {
     this.tracks = [];   // manos seguidas: identidad estable + estado de gestos
     this.hands = [];    // lectura visible, para dibujar las yemas
     this.pose = null;
+    this.pair = null;
     this.nextId = 0;
+    this.camAspect = 4 / 3;
+    // Rendimiento de la detección (tecla F): delegado, ms por detección y detecciones/s.
+    this.stats = { delegate: '', ms: 0, hz: 0 };
   }
 
   async enable(videoEl) {
     if (this.enabled) return;
     const { FilesetResolver, HandLandmarker } = await import('@mediapipe/tasks-vision');
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' }, audio: false });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480, frameRate: { ideal: 30 }, facingMode: 'user' }, audio: false,
+    });
     this.video = videoEl;
     videoEl.srcObject = stream;
     await videoEl.play();
+    this.camAspect = videoEl.videoWidth / videoEl.videoHeight || 4 / 3;
     const fileset = await FilesetResolver.forVisionTasks(WASM);
     const opts = (delegate) => ({
       baseOptions: { modelAssetPath: MODEL, delegate },
       runningMode: 'VIDEO', numHands: 2,
       minHandDetectionConfidence: 0.55, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
     });
-    try { this.landmarker = await HandLandmarker.createFromOptions(fileset, opts('GPU')); }
-    catch { this.landmarker = await HandLandmarker.createFromOptions(fileset, opts('CPU')); }
+    // El delegado GPU comparte la tarjeta con la obra; ?mp=cpu fuerza la CPU para comparar.
+    const wanted = new URLSearchParams(location.search).get('mp') === 'cpu' ? 'CPU' : 'GPU';
+    try { this.landmarker = await HandLandmarker.createFromOptions(fileset, opts(wanted)); this.stats.delegate = wanted; }
+    catch { this.landmarker = await HandLandmarker.createFromOptions(fileset, opts('CPU')); this.stats.delegate = 'CPU'; }
     this.enabled = true;
   }
 
@@ -84,6 +98,7 @@ export class HandInputSource {
     for (const tr of this.tracks) this.input.endStroke(tr.id);
     this.tracks = [];
     this.hands = [];
+    this.pair = null;
     this.setPose(null);
     this.input.setPointer(0, 0, false);
   }
@@ -92,11 +107,17 @@ export class HandInputSource {
   update(nowMs) {
     if (!this.enabled || !this.video || this.video.readyState < 2) return;
     if (this.video.currentTime === this.lastVideoTime) return;
-    // Como mucho 25 detecciones por segundo: la detección comparte GPU con la obra.
-    if (nowMs - (this.lastDetect || 0) < 40) return;
+    // Una detección por cuadro nuevo de la cámara (~30/s). Con el límite anterior de 40 ms
+    // y el bucle a 60 fps sólo se detectaba uno de cada tres cuadros (~20/s).
+    const gap = nowMs - (this.lastDetect || 0);
+    if (gap < DETECT_MS) return;
     this.lastDetect = nowMs;
     this.lastVideoTime = this.video.currentTime;
+    const t0 = performance.now();
     const res = this.landmarker.detectForVideo(this.video, nowMs);
+    const st = this.stats;
+    st.ms += (performance.now() - t0 - st.ms) * 0.1;
+    st.hz += (1000 / Math.min(gap, 1000) - st.hz) * 0.1;
     const list = (res.landmarks || []).map((lm, i) => ({ lm, wlm: res.worldLandmarks?.[i] }));
     this.process(list, nowMs / 1000);
   }
@@ -193,7 +214,12 @@ export class HandInputSource {
 
     const tips = TIPS.map((i) => this.toScreen(lm[i]));
     const palm = this.toScreen(d.palmN);
-    tr.hand = { id: tr.id, tips, palm, pointing, pinch: tr.pinch, open: tr.open, closed: tr.closed, nExt };
+    // Palma y tamaño en coordenadas de cámara sin deformar (unidades = alto de la imagen):
+    // la pose "juntas" se mide en tamaños de mano, igual cerca o lejos de la cámara.
+    const k = this.camAspect;
+    const cam = [d.palmN.x * k, d.palmN.y];
+    const camSize = Math.max(Math.hypot((lm[0].x - lm[9].x) * k, lm[0].y - lm[9].y), 1e-4);
+    tr.hand = { id: tr.id, tips, palm, cam, size: camSize, pointing, pinch: tr.pinch, open: tr.open, closed: tr.closed, nExt };
 
     // Abrir la palma de golpe (desde puño).
     if (tr.closed) tr.closedAt = t;
@@ -241,11 +267,23 @@ export class HandInputSource {
     if (live.length === 2) {
       const [a, b] = live.map((tr) => tr.hand);
       const sep = Math.hypot(a.palm[0] - b.palm[0], a.palm[1] - b.palm[1]) / window.innerWidth;
+      // Distancia entre palmas en tamaños de mano: con las palmas tocándose ≈ 1.
+      const rel = Math.hypot(a.cam[0] - b.cam[0], a.cam[1] - b.cam[1]) / ((a.size + b.size) / 2);
       const opened = a.nExt >= 2 && b.nExt >= 2;
       if (opened && sep > (this.pose === 'apart' ? 0.42 : 0.5)) pose = 'apart';
-      else if (sep < (this.pose === 'together' ? 0.26 : 0.18)) pose = 'together';
+      else if (rel < (this.pose === 'together' ? TOGETHER_EXIT : TOGETHER_ENTER)) pose = 'together';
       this.poseMid = [(a.palm[0] + b.palm[0]) / 2, (a.palm[1] + b.palm[1]) / 2];
       this.poseSep = sep;
+      this.pair = { t, rel, mid: this.poseMid };
+    } else if (live.length === 1 && this.pair && t - this.pair.t < MERGE_WINDOW && this.pair.rel < TOGETHER_EXIT) {
+      // Al juntar las manos MediaPipe suele dejar de ver una (se tapan o las funde en
+      // una sola detección). Si la que queda sigue donde estaban las dos, siguen juntas.
+      const h = live[0].hand, m = this.pair.mid;
+      if (Math.hypot(h.palm[0] - m[0], h.palm[1] - m[1]) / window.innerWidth < 0.15) {
+        pose = 'together';
+        this.poseMid = h.palm.slice();
+        this.poseSep = 0.08;
+      }
     }
     if (pose) this.poseSeen = t;
     else if (this.pose && t - (this.poseSeen ?? -9) < 0.35) pose = this.pose;

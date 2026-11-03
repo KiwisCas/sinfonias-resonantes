@@ -79,7 +79,8 @@ export class Overlay {
       });
     }
     for (; k < this.tips.length; k++) this.tips[k].style.opacity = '0';
-    if (hands.length === 2 && src.poseMid) {
+    // Con las manos juntas puede verse sólo una: el anillo sigue mientras dure la pose.
+    if (src.poseMid && (hands.length === 2 || src.pose)) {
       const size = Math.max(60, src.poseSep * window.innerWidth * 0.9);
       const r = this.ring.style;
       r.width = r.height = `${size}px`;
@@ -95,8 +96,11 @@ export class Overlay {
   /** Indicador de rendimiento (tecla F): fps reales y nivel de calidad activo. */
   toggleStats() { this.statsOn = !this.statsOn; this.statsEl.classList.toggle('on', this.statsOn); }
 
-  updateStats(fps, tier, tiers) {
-    if (this.statsOn) this.statsEl.textContent = `${fps} fps · calidad ${tiers - tier}/${tiers}`;
+  updateStats(fps, tier, tiers, hands) {
+    if (!this.statsOn) return;
+    let txt = `${fps} fps · calidad ${tiers - tier}/${tiers}`;
+    if (hands) txt += ` · manos ${hands.delegate} ${hands.ms.toFixed(1)} ms ${Math.round(hands.hz)}/s`;
+    this.statsEl.textContent = txt;
   }
 
   setSound(on) { this.soundBtn.textContent = on ? 'sonido · sí' : 'sonido · no'; }
